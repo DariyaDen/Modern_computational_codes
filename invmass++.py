@@ -1,4 +1,4 @@
-import ROOT 
+import ROOT
 import math
 import random
 import tqdm
@@ -43,9 +43,9 @@ def two_body_decay(parent, m1, m2):
     d2 = ROOT.Math.PxPyPzMVector(boost_vector(d2))
     return d1, d2
 
-
 random.seed(42)
 nParticles = 1000
+
 mass_pi_ch = 0.13957
 mass_k_zero = 0.497611
 mass_d_zero = 1.86484
@@ -59,7 +59,6 @@ for _ in tqdm.tqdm(range(nParticles)):
     mass_list.append((tracks_k0[0]+tracks_k0[1]).M())
     mass_list.append((tracks_d0[0]+tracks_d0[1]).M())
     mass_list.append((tracks_b0[0]+tracks_b0[1]).M())
-
 
 ROOT.RooMsgService.instance().setGlobalKillBelow(ROOT.RooFit.WARNING)
 x = ROOT.RooRealVar("x","Invariant Mass [GeV]",0,6)
@@ -99,16 +98,28 @@ print("\nFit results:")
 for name, var in [("K0",nK0),("D0",nD0),("B0",nB0),("Background",nBkg)]:
     print(f"{name}: N = {var.getVal():.1f} ± {var.getError():.1f}")
 
-c = ROOT.TCanvas("c","RooFit Example",900,700)
-frame = x.frame(ROOT.RooFit.Title("Invariant Mass Fit (Extended Likelihood)"))
+c = ROOT.TCanvas("c","Invariant Mass Fit",900,700)
 
-data.plotOn(frame, ROOT.RooFit.MarkerColor(ROOT.kBlue))
-model.plotOn(frame, ROOT.RooFit.LineColor(ROOT.kBlue))
+hist_data = ROOT.TH1F("hist_data","Invariant Mass Data", 100, 0, 6)
+for m in mass_list:
+    hist_data.Fill(m)
+hist_data.SetLineColor(ROOT.kBlue)
+hist_data.SetLineWidth(2)
+hist_data.Draw("HIST")
+
+frame = x.frame(ROOT.RooFit.Title(""))
+data.plotOn(frame)  # точки даних для масштабу
+
+model.plotOn(frame, ROOT.RooFit.LineColor(ROOT.kRed), ROOT.RooFit.LineWidth(2))  # модель червоною
 model.plotOn(frame, ROOT.RooFit.Components("bkg"),
-             ROOT.RooFit.LineStyle(ROOT.kDashed), ROOT.RooFit.LineColor(ROOT.kRed))
+             ROOT.RooFit.LineStyle(ROOT.kDashed),
+             ROOT.RooFit.LineColor(ROOT.kGreen),
+             ROOT.RooFit.LineWidth(2))  # фон зеленим
 
-frame.Draw()
+frame.Draw("SAME")
+
+c.Update()
 c.SaveAs("invmass++.png")
 c.SaveAs("invmass++.pdf")
-print("\nSaved plots: invmass++.png / .pdf")
+print("\nSaved plots: invmass++.png / invmass++.pdf")
 
