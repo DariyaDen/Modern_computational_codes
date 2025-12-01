@@ -2,7 +2,11 @@ import ROOT
 import math
 import random
 import tqdm
+from array import array
 
+# -------------------------------
+# Функції генерації і розпаду
+# -------------------------------
 def generate_and_decay(parent_mass, daughter_mass_1, daughter_mass_2):
     momentum = random.expovariate(1.0)
     theta = random.uniform(0, math.pi)
@@ -43,83 +47,91 @@ def two_body_decay(parent, m1, m2):
     d2 = ROOT.Math.PxPyPzMVector(boost_vector(d2))
     return d1, d2
 
-random.seed(42)
-nParticles = 1000
+# -------------------------------
+# Основна програма
+# -------------------------------
+if __name__ == '__main__':
+    random.seed(42)
+    nParticles = 1000
 
-mass_pi_ch = 0.13957
-mass_k_zero = 0.497611
-mass_d_zero = 1.86484
-mass_b_zero = 5.27958
+    mass_pi_ch = 0.13957
+    mass_k_zero = 0.497611
+    mass_d_zero = 1.86484
+    mass_b_zero = 5.27958
 
-mass_list = []
-for _ in tqdm.tqdm(range(nParticles)):
-    tracks_k0 = generate_and_decay(mass_k_zero, mass_pi_ch, mass_pi_ch)
-    tracks_d0 = generate_and_decay(mass_d_zero, mass_pi_ch, mass_pi_ch)
-    tracks_b0 = generate_and_decay(mass_b_zero, mass_pi_ch, mass_pi_ch)
-    mass_list.append((tracks_k0[0]+tracks_k0[1]).M())
-    mass_list.append((tracks_d0[0]+tracks_d0[1]).M())
-    mass_list.append((tracks_b0[0]+tracks_b0[1]).M())
+    hInvMass = ROOT.TH1F("hInvMass","Invariant Mass",300,0,6)
 
-ROOT.RooMsgService.instance().setGlobalKillBelow(ROOT.RooFit.WARNING)
-x = ROOT.RooRealVar("x","Invariant Mass [GeV]",0,6)
+    # Генерація частинок
+    for i in tqdm.tqdm(range(nParticles)):
+        tracks_k0 = generate_and_decay(mass_k_zero, mass_pi_ch, mass_pi_ch)
+        tracks_d0 = generate_and_decay(mass_d_zero, mass_pi_ch, mass_pi_ch)
+        tracks_b0 = generate_and_decay(mass_b_zero, mass_pi_ch, mass_pi_ch)
+        all_tracks = tracks_k0 + tracks_d0 + tracks_b0
 
-data = ROOT.RooDataSet("data","Invariant Mass Data",ROOT.RooArgSet(x))
-for m in mass_list:
-    x.setVal(m)
-    data.add(ROOT.RooArgSet(x))
+        for itr1 in range(len(all_tracks)):
+            for itr2 in range(itr1+1, len(all_tracks)):
+                hInvMass.Fill((all_tracks[itr1]+all_tracks[itr2]).M())
 
-meanK0 = ROOT.RooRealVar("meanK0","K0 mean", mass_k_zero, 0.48, 0.52)
-sigmaK0 = ROOT.RooRealVar("sigmaK0","K0 sigma", 0.03, 0.01, 0.1)
-gaussK0 = ROOT.RooGaussian("gaussK0","K0 gaussian",x,meanK0,sigmaK0)
+    # -------------------------------
+    # Повний фіт (K0 + D0 + B0 + фон в квадраті)
+    # -------------------------------
+    fitFull = ROOT.TF1("fitFull",
+                       "[0]/(sqrt(2*TMath::Pi())*[2])*TMath::Exp(-0.5*((x-[1])/[2])^2)"   # K0
+                       " + [3]/(sqrt(2*TMath::Pi())*[5])*TMath::Exp(-0.5*((x-[4])/[5])^2)" # D0
+                       " + [6]/(sqrt(2*TMath::Pi())*[8])*TMath::Exp(-0.5*((x-[7])/[8])^2)" # B0
+                       " + ([9]*[9])*TMath::Exp(-[10]*x)",                                  # Фон ≥ 0
+                       0,6)
 
-meanD0 = ROOT.RooRealVar("meanD0","D0 mean", mass_d_zero, 1.8, 1.88)
-sigmaD0 = ROOT.RooRealVar("sigmaD0","D0 sigma",0.05,0.01,0.1)
-gaussD0 = ROOT.RooGaussian("gaussD0","D0 gaussian",x,meanD0,sigmaD0)
+    params_full = array('d', [
+        400., 0.4976, 0.02,  # K0 амплітуда піднята
+        600., 1.865, 0.03,   # D0 амплітуда піднята
+        300., 5.2796, 0.05,  # B0 залишився без змін
+        1., 0.5              # Фон
+    ])
+    fitFull.SetParameters(params_full)
+    fitFull.SetParLimits(1,0.48,0.52)
+    fitFull.SetParLimits(2,0.,0.1)
+    fitFull.SetParLimits(4,1.80,1.90)
+    fitFull.SetParLimits(5,0.,0.2)
+    fitFull.SetParLimits(7,5.20,5.35)
+    fitFull.SetParLimits(8,0.,0.5)
+    hInvMass.Fit(fitFull,"R")
 
-meanB0 = ROOT.RooRealVar("meanB0","B0 mean", mass_b_zero,5.2,5.35)
-sigmaB0 = ROOT.RooRealVar("sigmaB0","B0 sigma",0.05,0.01,0.1)
-gaussB0 = ROOT.RooGaussian("gaussB0","B0 gaussian",x,meanB0,sigmaB0)
+    # -------------------------------
+    # Зелений фіт (K0 + D0 + фон в квадраті, без B0)
+    # -------------------------------
+    fitKD = ROOT.TF1("fitKD",
+                     "[0]/(sqrt(2*TMath::Pi())*[2])*TMath::Exp(-0.5*((x-[1])/[2])^2)"  # K0
+                     " + [3]/(sqrt(2*TMath::Pi())*[5])*TMath::Exp(-0.5*((x-[4])/[5])^2)" # D0
+                     " + ([6]*[6])*TMath::Exp(-[7]*x)",                                   # Фон
+                     0,6)
 
-nK0 = ROOT.RooRealVar("nK0","N K0",1000,0,5000)
-nD0 = ROOT.RooRealVar("nD0","N D0",1000,0,5000)
-nB0 = ROOT.RooRealVar("nB0","N B0",1000,0,5000)
+    params_kd = array('d', [
+        fitFull.GetParameter(0),  # K0 amp
+        fitFull.GetParameter(1),  # K0 mean
+        fitFull.GetParameter(2),  # K0 sigma
+        fitFull.GetParameter(3),  # D0 amp
+        fitFull.GetParameter(4),  # D0 mean
+        fitFull.GetParameter(5),  # D0 sigma
+        fitFull.GetParameter(9),  # Фон амплітуда
+        fitFull.GetParameter(10)  # λ
+    ])
+    fitKD.SetParameters(params_kd)
+    fitKD.SetLineColor(ROOT.kGreen+2)
+    fitKD.SetLineWidth(3)
 
-slope = ROOT.RooRealVar("slope","background slope",-1, -10, 10)
-bkg = ROOT.RooExponential("bkg","background",x,slope)
-nBkg = ROOT.RooRealVar("nBkg","N background",1000,0,20000)
+    # -------------------------------
+    # Малюємо все на одному канвасі
+    # -------------------------------
+    canvas = ROOT.TCanvas("canvas","Invariant Mass",600,600)
+    hInvMass.GetXaxis().SetTitle("M(π⁺π⁻) [GeV]")
+    hInvMass.GetYaxis().SetTitle("Events")
+    hInvMass.Draw()
+    fitFull.SetLineColor(ROOT.kRed)
+    fitFull.SetLineWidth(3)
+    fitFull.Draw("same")
+    fitKD.Draw("same")
 
-model = ROOT.RooAddPdf("model","Extended model",
-                       ROOT.RooArgList(gaussK0,gaussD0,gaussB0,bkg),
-                       ROOT.RooArgList(nK0,nD0,nB0,nBkg))
-
-fit_result = model.fitTo(data, ROOT.RooFit.Extended(), ROOT.RooFit.Save())
-
-print("\nFit results:")
-for name, var in [("K0",nK0),("D0",nD0),("B0",nB0),("Background",nBkg)]:
-    print(f"{name}: N = {var.getVal():.1f} ± {var.getError():.1f}")
-
-c = ROOT.TCanvas("c","Invariant Mass Fit",900,700)
-
-hist_data = ROOT.TH1F("hist_data","Invariant Mass Data", 100, 0, 6)
-for m in mass_list:
-    hist_data.Fill(m)
-hist_data.SetLineColor(ROOT.kBlue)
-hist_data.SetLineWidth(2)
-hist_data.Draw("HIST")
-
-frame = x.frame(ROOT.RooFit.Title(""))
-data.plotOn(frame)  # точки даних для масштабу
-
-model.plotOn(frame, ROOT.RooFit.LineColor(ROOT.kRed), ROOT.RooFit.LineWidth(2))  # модель червоною
-model.plotOn(frame, ROOT.RooFit.Components("bkg"),
-             ROOT.RooFit.LineStyle(ROOT.kDashed),
-             ROOT.RooFit.LineColor(ROOT.kGreen),
-             ROOT.RooFit.LineWidth(2))  # фон зеленим
-
-frame.Draw("SAME")
-
-c.Update()
-c.SaveAs("invmass++.png")
-c.SaveAs("invmass++.pdf")
-print("\nSaved plots: invmass++.png / invmass++.pdf")
+    canvas.SaveAs("invmass_full_vs_KD+.pdf")
+    canvas.SaveAs("invmass_full_vs_KD+.png")
 
