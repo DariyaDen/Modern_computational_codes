@@ -1,0 +1,730 @@
+
+#include "DetectorConstruction.hh"
+#include "DetectorParameters.hh"
+
+#include "G4Box.hh"
+#include "G4Tubs.hh"
+#include "G4Polycone.hh"
+#include "G4SubtractionSolid.hh"
+#include "G4UnionSolid.hh"
+#include "G4VSolid.hh"
+#include "G4LogicalVolume.hh"
+#include "G4PVPlacement.hh"
+#include "G4NistManager.hh"
+#include "G4Material.hh"
+#include "G4SystemOfUnits.hh"
+#include "G4PhysicalConstants.hh"
+#include "G4ThreeVector.hh"
+#include "G4VisAttributes.hh"
+#include "G4Colour.hh"
+#include "G4Exception.hh"
+
+namespace
+{
+    using namespace DetectorParameters;
+
+    constexpr G4double kGeomTolerance = 1.0e-6 * mm;
+    constexpr G4double kUnionOverlap = 0.01 * mm;
+
+    // Create germanium with the specified dead-layer density.
+    G4Material* MakeDeadLayerMaterial()
+    {
+        auto* nist = G4NistManager::Instance();
+
+        auto* material = new G4Material(
+            "DeadLayerGe",
+            5.23 * g / cm3,
+            1
+        );
+
+        material->AddElement(
+            nist->FindOrBuildElement("Ge"),
+            1
+        );
+
+        return material;
+    }
+
+    // Build the crystal with a central blind bore and a bottom annular groove.
+    G4VSolid* MakeCrystalSolid(
+        const G4String& name,
+        G4double diameter,
+        G4double height,
+        G4double topDiameter,
+        G4double chamferHeight,
+        G4double holeDiameter,
+        G4double holeDepth,
+        G4double grooveInnerDiameter,
+        G4double grooveOuterDiameter,
+        G4double grooveDepth)
+    {
+        const G4double zBottom = -height / 2.0;
+        const G4double zChamfer = height / 2.0 - chamferHeight;
+        const G4double zTop = height / 2.0;
+
+        G4double zPlanes[3] = {
+            zBottom,
+            zChamfer,
+            zTop
+        };
+
+        G4double rInner[3] = {
+            0.0,
+            0.0,
+            0.0
+        };
+
+        G4double rOuter[3] = {
+            diameter / 2.0,
+            diameter / 2.0,
+            topDiameter / 2.0
+        };
+
+        G4VSolid* solid = new G4Polycone(
+            name + "_Outer",
+            0.0,
+            twopi,
+            3,
+            zPlanes,
+            rInner,
+            rOuter
+        );
+
+        // Subtract the central blind bore from the bottom face.
+        auto* bore = new G4Tubs(
+            name + "_Bore",
+            0.0,
+            holeDiameter / 2.0,
+            holeDepth / 2.0 + kGeomTolerance,
+            0.0,
+            twopi
+        );
+
+        const G4double boreCenterZ =
+            zBottom + holeDepth / 2.0;
+
+        solid = new G4SubtractionSolid(
+            name + "_WithBore",
+            solid,
+            bore,
+            nullptr,
+            G4ThreeVector(0.0, 0.0, boreCenterZ)
+        );
+
+        // Subtract the annular groove from the bottom face.
+        auto* groove = new G4Tubs(
+            name + "_Groove",
+            grooveInnerDiameter / 2.0,
+            grooveOuterDiameter / 2.0,
+            grooveDepth / 2.0 + kGeomTolerance,
+            0.0,
+            twopi
+        );
+
+        const G4double grooveCenterZ =
+            zBottom + grooveDepth / 2.0;
+
+        solid = new G4SubtractionSolid(
+            name + "_WithGroove",
+            solid,
+            groove,
+            nullptr,
+            G4ThreeVector(0.0, 0.0, grooveCenterZ)
+        );
+
+        return solid;
+    }
+
+    // Build a cylindrical shell.
+    G4VSolid* MakeCylindricalShell(
+        const G4String& name,
+        G4double innerRadius,
+        G4double outerRadius,
+        G4double height)
+    {
+        return new G4Tubs(
+            name,
+            innerRadius,
+            outerRadius,
+            height / 2.0,
+            0.0,
+            twopi
+        );
+    }
+}
+
+G4VPhysicalVolume* DetectorConstruction::Construct()
+{
+    auto* nist = G4NistManager::Instance();
+
+    // -----------------------------------------------------------------
+    // Materials
+    // -----------------------------------------------------------------
+
+    auto* worldMaterial = nist->FindOrBuildMaterial("G4_AIR");
+    auto* germanium = nist->FindOrBuildMaterial("G4_Ge");
+    auto* aluminium = nist->FindOrBuildMaterial("G4_Al");
+    auto* carbon = nist->FindOrBuildMaterial("G4_C");
+    auto* ptfe = nist->FindOrBuildMaterial("G4_TEFLON");
+    auto* deadGermanium = MakeDeadLayerMaterial();
+
+    // -----------------------------------------------------------------
+    // World volume
+    // -----------------------------------------------------------------
+
+    auto* worldSolid = new G4Box(
+        "WorldSolid",
+        worldHalfSize,
+        worldHalfSize,
+        worldHalfSize
+    );
+
+    auto* worldLogical = new G4LogicalVolume(
+        worldSolid,
+        worldMaterial,
+        "WorldLogical"
+    );
+
+    auto* worldPhysical = new G4PVPlacement(
+        nullptr,
+        G4ThreeVector(),
+        worldLogical,
+        "World",
+        nullptr,
+        false,
+        0,
+        true
+    );
+
+    worldLogical->SetVisAttributes(G4VisAttributes::GetInvisible());
+
+    // -----------------------------------------------------------------
+    // Complete HPGe crystal
+    // -----------------------------------------------------------------
+
+    auto* fullCrystalSolid = MakeCrystalSolid(
+        "FullCrystal",
+        D,
+        H,
+        Q,
+        T,
+        P,
+        centralHoleDepth,
+        S1,
+        S2,
+        M
+    );
+
+    // -----------------------------------------------------------------
+    // Active HPGe volume
+    // -----------------------------------------------------------------
+
+    const G4double activeD = D - 2.0 * d2;
+    const G4double activeH = H - d1 - d3;
+    const G4double activeQ = Q - 2.0 * d2;
+    const G4double activeT = T;
+    const G4double activeP = P + 2.0 * d4;
+    const G4double activeL = centralHoleDepth + d5 - d3;
+    const G4double activeS1 = S1 - 2.0 * d6;
+    const G4double activeS2 = S2 + 2.0 * d7;
+    const G4double activeM = M + d8 - d3;
+
+    const G4double activeShiftZ = (d3 - d1) / 2.0;
+
+    if (activeD <= 0.0 ||
+        activeH <= 0.0 ||
+        activeQ <= 0.0 ||
+        activeT <= 0.0 ||
+        activeP <= 0.0 ||
+        activeL <= 0.0 ||
+        activeS1 <= activeP ||
+        activeS2 <= activeS1 ||
+        activeM <= 0.0)
+    {
+        G4Exception(
+            "DetectorConstruction::Construct",
+            "InvalidActiveCrystal",
+            FatalException,
+            "The calculated active crystal dimensions are invalid."
+        );
+    }
+
+    auto* activeCrystalSolid = MakeCrystalSolid(
+        "ActiveCrystal",
+        activeD,
+        activeH,
+        activeQ,
+        activeT,
+        activeP,
+        activeL,
+        activeS1,
+        activeS2,
+        activeM
+    );
+
+    auto* activeCrystalLogical = new G4LogicalVolume(
+        activeCrystalSolid,
+        germanium,
+        "ActiveCrystalLogical"
+    );
+
+    new G4PVPlacement(
+        nullptr,
+        G4ThreeVector(0.0, 0.0, activeShiftZ),
+        activeCrystalLogical,
+        "ActiveCrystal",
+        worldLogical,
+        false,
+        0,
+        true
+    );
+
+    // The dead layer is the complete crystal minus the translated active volume.
+    auto* deadCrystalSolid = new G4SubtractionSolid(
+        "DeadCrystalSolid",
+        fullCrystalSolid,
+        activeCrystalSolid,
+        nullptr,
+        G4ThreeVector(0.0, 0.0, activeShiftZ)
+    );
+
+    auto* deadCrystalLogical = new G4LogicalVolume(
+        deadCrystalSolid,
+        deadGermanium,
+        "DeadCrystalLogical"
+    );
+
+    new G4PVPlacement(
+        nullptr,
+        G4ThreeVector(),
+        deadCrystalLogical,
+        "DeadCrystal",
+        worldLogical,
+        false,
+        0,
+        true
+    );
+
+    // -----------------------------------------------------------------
+    // Main detector coordinates
+    // -----------------------------------------------------------------
+
+    const G4double crystalTopZ = H / 2.0;
+    const G4double crystalBottomZ = -H / 2.0;
+
+    // -----------------------------------------------------------------
+    // Carbon entrance window
+    // -----------------------------------------------------------------
+
+    const G4double windowRadius = carbonDiameter / 2.0;
+
+    const G4double windowBottomZ =
+        crystalTopZ + windowGapAboveCrystal;
+
+    const G4double windowTopZ =
+        windowBottomZ + thinWindowThickness;
+
+    const G4double windowCenterZ =
+        (windowBottomZ + windowTopZ) / 2.0;
+
+    auto* windowSolid = new G4Tubs(
+        "CarbonWindowSolid",
+        0.0,
+        windowRadius,
+        thinWindowThickness / 2.0,
+        0.0,
+        twopi
+    );
+
+    auto* windowLogical = new G4LogicalVolume(
+        windowSolid,
+        carbon,
+        "CarbonWindowLogical"
+    );
+
+    new G4PVPlacement(
+        nullptr,
+        G4ThreeVector(0.0, 0.0, windowCenterZ),
+        windowLogical,
+        "CarbonWindow",
+        worldLogical,
+        false,
+        0,
+        true
+    );
+
+    // -----------------------------------------------------------------
+    // Coordinates for the outer housing and cold finger
+    // -----------------------------------------------------------------
+
+    const G4double capOuterRadius = capMaxDiameter / 2.0;
+    const G4double capInnerRadius =
+        capOuterRadius - housingSideThickness;
+
+    const G4double windowRingHeight = topAssemblyHeight;
+
+    const G4double windowRingBottomZ =
+        windowTopZ - windowRingHeight;
+
+    const G4double plateRadius = plateDiameter / 2.0;
+
+    const G4double plateTopZ =
+        crystalTopZ - plateTopOffsetFromCrystalTop;
+
+    const G4double plateBottomZ =
+        plateTopZ - plateThickness;
+
+    const G4double blockTopZ =
+        plateBottomZ + kUnionOverlap;
+
+    const G4double blockBottomZ =
+        blockTopZ - coldFingerBlockHeight;
+
+    const G4double rodTopZ =
+        blockBottomZ + kUnionOverlap;
+
+    const G4double rodBottomZ =
+        rodTopZ - coldFingerRodHeight;
+
+    // -----------------------------------------------------------------
+    // Build a single connected aluminium housing.
+    //
+    // The outer wall extends from the top window assembly to the
+    // mounting plate. The plate, block and rod are unioned into the
+    // same solid. A small overlap is used at joints for robust Boolean
+    // unions. The 6.6 mm gap below the crystal remains empty.
+    // -----------------------------------------------------------------
+
+    // Main vertical outer wall.
+    const G4double wallBottomZ =
+        plateTopZ - kUnionOverlap;
+
+    const G4double wallTopZ =
+        windowRingBottomZ + kUnionOverlap;
+
+    const G4double wallHeight =
+        wallTopZ - wallBottomZ;
+
+    const G4double wallCenterZ =
+        (wallTopZ + wallBottomZ) / 2.0;
+
+    if (wallHeight <= 0.0)
+    {
+        G4Exception(
+            "DetectorConstruction::Construct",
+            "InvalidHousingWall",
+            FatalException,
+            "The calculated outer housing wall height is not positive."
+        );
+    }
+
+    auto* wallSolid = MakeCylindricalShell(
+        "HousingWallSolid",
+        capInnerRadius,
+        capOuterRadius,
+        wallHeight
+    );
+
+    // Annular flange overlapping the mounting plate and the outer wall.
+    const G4double flangeHeight = housingSideThickness;
+    const G4double flangeInnerRadius =
+        plateRadius - housingSideThickness;
+    const G4double flangeOuterRadius = capOuterRadius;
+
+    if (flangeInnerRadius < 0.0 ||
+        flangeInnerRadius >= flangeOuterRadius)
+    {
+        G4Exception(
+            "DetectorConstruction::Construct",
+            "InvalidHousingFlange",
+            FatalException,
+            "The calculated housing flange radii are invalid."
+        );
+    }
+
+    auto* flangeSolid = MakeCylindricalShell(
+        "HousingFlangeSolid",
+        flangeInnerRadius,
+        flangeOuterRadius,
+        flangeHeight
+    );
+
+    const G4double flangeCenterZ =
+        plateTopZ + flangeHeight / 2.0;
+
+    auto* wallAndFlangeSolid = new G4UnionSolid(
+        "WallAndFlangeSolid",
+        wallSolid,
+        flangeSolid,
+        nullptr,
+        G4ThreeVector(
+            0.0,
+            0.0,
+            flangeCenterZ - wallCenterZ
+        )
+    );
+
+    // Mounting plate.
+    auto* plateSolid = new G4Tubs(
+        "MountingPlateSolid",
+        0.0,
+        plateRadius,
+        plateThickness / 2.0,
+        0.0,
+        twopi
+    );
+
+    const G4double plateCenterZ =
+        (plateTopZ + plateBottomZ) / 2.0;
+
+    auto* wallFlangeAndPlateSolid = new G4UnionSolid(
+        "WallFlangeAndPlateSolid",
+        wallAndFlangeSolid,
+        plateSolid,
+        nullptr,
+        G4ThreeVector(
+            0.0,
+            0.0,
+            plateCenterZ - wallCenterZ
+        )
+    );
+
+    // Cold-finger block.
+    const G4double blockRadius =
+        coldFingerBlockDiameter / 2.0;
+
+    auto* blockSolid = new G4Tubs(
+        "ColdFingerBlockSolid",
+        0.0,
+        blockRadius,
+        coldFingerBlockHeight / 2.0,
+        0.0,
+        twopi
+    );
+
+    const G4double blockCenterZ =
+        (blockTopZ + blockBottomZ) / 2.0;
+
+    auto* housingWithBlockSolid = new G4UnionSolid(
+        "HousingWithBlockSolid",
+        wallFlangeAndPlateSolid,
+        blockSolid,
+        nullptr,
+        G4ThreeVector(
+            0.0,
+            0.0,
+            blockCenterZ - wallCenterZ
+        )
+    );
+
+    // Cold-finger rod.
+    const G4double rodRadius =
+        coldFingerRodDiameter / 2.0;
+
+    auto* rodSolid = new G4Tubs(
+        "ColdFingerRodSolid",
+        0.0,
+        rodRadius,
+        coldFingerRodHeight / 2.0,
+        0.0,
+        twopi
+    );
+
+    const G4double rodCenterZ =
+        (rodTopZ + rodBottomZ) / 2.0;
+
+    auto* housingWithBlockAndRodSolid = new G4UnionSolid(
+        "HousingWithBlockAndRodSolid",
+        housingWithBlockSolid,
+        rodSolid,
+        nullptr,
+        G4ThreeVector(
+            0.0,
+            0.0,
+            rodCenterZ - wallCenterZ
+        )
+    );
+
+    // Aluminium ring around the carbon entrance window.
+    // It is unioned with the outer wall to form one upper housing.
+    auto* windowRingSolid = MakeCylindricalShell(
+        "WindowRingSolid",
+        windowRadius,
+        capOuterRadius,
+        windowRingHeight
+    );
+
+    const G4double windowRingCenterZ =
+        windowRingBottomZ + windowRingHeight / 2.0;
+
+    auto* completeHousingSolid = new G4UnionSolid(
+        "CompleteHousingSolid",
+        housingWithBlockAndRodSolid,
+        windowRingSolid,
+        nullptr,
+        G4ThreeVector(
+            0.0,
+            0.0,
+            windowRingCenterZ - wallCenterZ
+        )
+    );
+
+    auto* completeHousingLogical = new G4LogicalVolume(
+        completeHousingSolid,
+        aluminium,
+        "CompleteHousingLogical"
+    );
+
+    new G4PVPlacement(
+        nullptr,
+        G4ThreeVector(0.0, 0.0, wallCenterZ),
+        completeHousingLogical,
+        "CompleteHousing",
+        worldLogical,
+        false,
+        0,
+        true
+    );
+
+    // -----------------------------------------------------------------
+    // PTFE side sleeve around the crystal
+    // -----------------------------------------------------------------
+
+    const G4double ptfeInnerRadius = D / 2.0;
+    const G4double ptfeOuterRadius =
+        ptfeInnerRadius + ptfeSleeveThickness;
+
+    auto* ptfeSleeveSolid = MakeCylindricalShell(
+        "PTFESleeveSolid",
+        ptfeInnerRadius,
+        ptfeOuterRadius,
+        H
+    );
+
+    auto* ptfeSleeveLogical = new G4LogicalVolume(
+        ptfeSleeveSolid,
+        ptfe,
+        "PTFESleeveLogical"
+    );
+
+    new G4PVPlacement(
+        nullptr,
+        G4ThreeVector(),
+        ptfeSleeveLogical,
+        "PTFESleeve",
+        worldLogical,
+        false,
+        0,
+        true
+    );
+
+    // -----------------------------------------------------------------
+    // Simplified aluminium crystal holder
+    // -----------------------------------------------------------------
+
+    const G4double holderInnerRadius = ptfeOuterRadius;
+    const G4double holderOuterRadius =
+        holderInnerRadius + housingSideThickness;
+
+    auto* holderSideSolid = MakeCylindricalShell(
+        "HolderSideSolid",
+        holderInnerRadius,
+        holderOuterRadius,
+        H
+    );
+
+    auto* holderSideLogical = new G4LogicalVolume(
+        holderSideSolid,
+        aluminium,
+        "HolderSideLogical"
+    );
+
+    new G4PVPlacement(
+        nullptr,
+        G4ThreeVector(),
+        holderSideLogical,
+        "HolderSide",
+        worldLogical,
+        false,
+        0,
+        true
+    );
+
+    // Simplified upper PTFE retaining ring.
+    const G4double ptfeTopRingHeight = ptfeSleeveThickness;
+    const G4double ptfeTopRingInnerRadius = Q / 2.0;
+    const G4double ptfeTopRingOuterRadius = D / 2.0;
+
+    auto* ptfeTopRingSolid = MakeCylindricalShell(
+        "PTFETopRingSolid",
+        ptfeTopRingInnerRadius,
+        ptfeTopRingOuterRadius,
+        ptfeTopRingHeight
+    );
+
+    auto* ptfeTopRingLogical = new G4LogicalVolume(
+        ptfeTopRingSolid,
+        ptfe,
+        "PTFETopRingLogical"
+    );
+
+    new G4PVPlacement(
+        nullptr,
+        G4ThreeVector(
+            0.0,
+            0.0,
+            crystalTopZ + ptfeTopRingHeight / 2.0
+        ),
+        ptfeTopRingLogical,
+        "PTFETopRing",
+        worldLogical,
+        false,
+        0,
+        true
+    );
+
+    // -----------------------------------------------------------------
+    // Visualization attributes
+    // -----------------------------------------------------------------
+
+    auto* activeGeVis = new G4VisAttributes(
+        G4Colour(0.2, 0.75, 0.9)
+    );
+    activeGeVis->SetVisibility(true);
+    activeGeVis->SetForceSolid(true);
+    activeCrystalLogical->SetVisAttributes(activeGeVis);
+
+    auto* deadGeVis = new G4VisAttributes(
+        G4Colour(0.85, 0.25, 0.25)
+    );
+    deadGeVis->SetVisibility(true);
+    deadGeVis->SetForceSolid(true);
+    deadCrystalLogical->SetVisAttributes(deadGeVis);
+
+    auto* carbonVis = new G4VisAttributes(
+        G4Colour(0.25, 0.25, 0.25)
+    );
+    carbonVis->SetVisibility(true);
+    carbonVis->SetForceSolid(true);
+    windowLogical->SetVisAttributes(carbonVis);
+
+    auto* aluminiumVis = new G4VisAttributes(
+        G4Colour(0.75, 0.75, 0.78)
+    );
+    aluminiumVis->SetVisibility(true);
+    aluminiumVis->SetForceSolid(true);
+    completeHousingLogical->SetVisAttributes(aluminiumVis);
+    holderSideLogical->SetVisAttributes(aluminiumVis);
+
+    auto* ptfeVis = new G4VisAttributes(
+        G4Colour(0.9, 0.8, 0.35)
+    );
+    ptfeVis->SetVisibility(true);
+    ptfeVis->SetForceSolid(true);
+
+    ptfeSleeveLogical->SetVisAttributes(ptfeVis);
+    ptfeTopRingLogical->SetVisAttributes(ptfeVis);
+
+    return worldPhysical;
+}
+
